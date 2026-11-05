@@ -1,0 +1,9 @@
+# secrets
+.env*
+!.env*.example
+# build
+node_modules/
+build/
+.gradle/
+local.properties
+*.apk
