@@ -1,146 +1,248 @@
-# Waypoint
+# Tunza: proof-of-care giving
 
-**AI-assisted care templates for women's health, built on Open Health Stack.**
+**Tunza pays for care only when the care is proven.**
 
-Waypoint turns a screening result into a booked, affordable, guideline-aligned next step. A clinician records a woman's risk factors and test results; Waypoint stratifies risk, generates the care pathway from the national guideline, checks whether the facility can actually deliver it, estimates what it will cost, and gives the patient a plain-language plan. The first care template covers cervical cancer screening and triage in Kenya.
+People want to fund healthcare for the homeless, children in care and refugees, but they rarely trust where the money goes. Tunza is a small health information exchange for the people national systems miss. Outreach workers record visits on an offline-first Android app built on the Android FHIR SDK. Pharmacies and clinics bill a community care fund. The Tunza agent checks every claim against the visit records and fund rules, then pays the provider through **PayPal Payouts**. Donors get receipts showing the care their money bought, without any patient's identity.
 
-Waypoint is FHIR-native and offline-first. Every decision — risk assessment, clinician override, pathway, booking, cost estimate, message — is stored as a FHIR resource, synced when there is connectivity, and auditable.
+> *Tunza* means "to care for" in Swahili.
 
----
-
-## Who it is for
-
-| Role | What Waypoint does for them |
-|---|---|
-| Nurse, clinical officer, doctor | Under three minutes from opening a patient to a printed plan; an AI output they can agree with or override; stock and cost visible before promising anything |
-| Patient | A plan in plain English or Kiswahili: what was found, what happens next, when, where, what it costs, what to bring; SMS reminders; a portal for symptoms and results |
-| Facility | Every clinician on the same guideline; procedures not booked when supplies are out; demand forecasts for kits and equipment; adherence and loss-to-follow-up metrics |
+Built for the [PayPal AI Hackathon](https://paypalai.devpost.com/), 2026.
 
 ---
 
 ## How it works
 
 ```
-Questionnaire ──► Observations ──► Risk model ──► PlanDefinition (CQL) ──► CarePlan
-   (SDC form)      (StructureMap)   RiskAssessment    national guideline      ServiceRequests
-                                                                              Appointments
-                                                          │
-                              ┌────────────────────────────┴───────────────────────┐
-                              ▼                                                    ▼
-                    Inventory (InventoryItem)                          Cost (ChargeItemDefinition)
-                    "can this facility do it?"                         "what will it cost, who pays?"
-                              │                                                    │
-                              └──────────────► Patient summary · SMS · Portal ◄────┘
-                                                        │
-                                              Data Pipes ──► Facility dashboard
+ Donor ──PayPal checkout──► Community care fund
+                                   │
+ Outreach worker (offline) ──visit──► Shared health record (FHIR)
+                                   │
+ Pharmacy / clinic ──claim──► Tunza agent ──checks──► records + fund rules
+                                   │
+                    paid ◄─────────┼─────────► refused / held for a human
+                     │
+          PayPal Payout to the provider ──► anonymous receipt to donors
 ```
 
-Three kinds of logic, kept deliberately separate:
+1. **A donor gives** to a fund (street medicine, a children's home, a camp clinic) through PayPal.
+2. **An outreach worker records care** on the field app, with or without signal: triage, vitals, wound care, medicines dispensed, referral and follow-up. The visit syncs as FHIR resources when the phone reconnects.
+3. **The provider bills the fund** for what it supplied.
+4. **The agent checks the claim against the visit record:**
+   - Was the care actually recorded? A dressing needs a `Procedure`; a medicine needs a `MedicationDispense`.
+   - Does the quantity match? Billing 4 dressings when the visit shows 1 gets the claim refused.
+   - Has this record already been paid for?
+   - Is the item covered, at the fee-schedule price, within the client's weekly cap?
+5. **Verified claims are paid automatically** with a PayPal Payout. Mismatches are refused with a plain explanation. Verified claims over the cap wait for a human lead.
+6. **Donors see verified receipts** that never show patient identities.
 
-1. **Clinical rules** are deterministic CQL in the PlanDefinition. The model refines risk *within* the guideline; it never overrides triage for HPV-positive women or women living with HIV.
-2. **Prediction** is an interpretable tabular model (logistic regression, then LightGBM) behind a single `Prediction` interface. Output is a FHIR `RiskAssessment` with probability, tier, feature contributions, and model version.
-3. **Language** is generated from structured outputs only — the patient summary is written by an LLM from the `CarePlan`, never from free text, and never on the decision path.
+## Actors
 
----
+| Actor | Role |
+|---|---|
+| Client | The person receiving care. Registered with a care card, no national ID needed. |
+| Outreach health worker | Registers clients and records visits on the field app |
+| Outreach lead | Onboards facilities, reviews refused or held claims, approves agent suggestions |
+| Provider (pharmacy / clinic) | Supplies care, bills the fund, receives PayPal payouts |
+| Donor | Funds care through PayPal, reads receipts |
+| Tunza agent | Checks claims against records and rules, pays or refuses, records the decision |
+
+## Architecture
+
+Tunza is built like a national health information exchange (auth, registries, shared record, claims), but for one community.
+
+```
+ Field app ─┐  Pharmacy/Clinic ─┐  Donor web ─┐  Lead dashboard ─┐
+            ▼                   ▼             ▼                  ▼
+      ┌────────────────────── Tunza Gateway ───────────────────────┐
+      │ Auth          OAuth2 client credentials, scopes per actor   │
+      │ Registries    Facilities (with PayPal payee) · Clients      │
+      │ Shared record FHIR sync endpoint for the Android FHIR SDK   │
+      │ Claims        Claim → agent → ClaimResponse + PayPal Payout │
+      │ Terminology   Tunza fee schedule                            │
+      └───────────────┬───────────────────────────┬────────────────┘
+                      ▼                           ▼
+              HAPI FHIR R4 (private)        PayPal REST APIs
+```
+
+- **HAPI FHIR is never exposed.** Every read and write goes through the gateway, which enforces scopes, keeps each team inside its own data and stamps every record with its source.
+- **Everything is stored as FHIR R4:** `Patient`, `Coverage`, `AllergyIntolerance`, `Encounter`, `Observation`, `Procedure`, `MedicationDispense`, `ServiceRequest`, `Appointment`, `Provenance`, `Claim`, `ClaimResponse`.
+- **Each claim is paid at most once.** The PayPal payout batch ID is `claim-<id>`, so PayPal rejects a second payout for the same claim.
+
+### How PayPal is used
+
+| Flow | PayPal API |
+|---|---|
+| Donations into the fund | Orders v2 (create + capture), PayPal wallet and card |
+| Paying providers for verified care | Payouts (`/v1/payments/payouts`) |
+| Demo of failed payments | Negative testing (`PayPal-Mock-Response`) |
+
+### How AI is used
+
+The money decision itself has no AI in it: the checks are fixed rules and can't be talked into paying. AI sits around that decision:
+
+- explaining refusals and holds in plain language for providers and leads *(in progress)*
+- turning fund rules written in plain words into rules the agent enforces *(in progress)*
+- flagging unusual billing patterns per provider *(in progress)*
+- writing anonymous donor receipts *(in progress)*
 
 ## Repository layout
 
 ```
-waypoint/
-├── app/         Clinician app — Kotlin, Android FHIR SDK (engine, data-capture, workflow, knowledge), Jetpack Compose
-├── platform/    HAPI FHIR R4, FHIR Info Gateway, prediction / inventory / cost services, FHIR Data Pipes, docker-compose
-├── templates/   Care templates as FHIR artifacts: Questionnaire, StructureMap, PlanDefinition, CQL Library,
-│                ActivityDefinitions, ChargeItemDefinitions, patient-summary templates (en, sw)
-├── models/      Data schema, synthetic cohort generator, training pipelines, evaluation, model registry, serving
-├── patient/     Summary PDF generation, SMS/USSD reminders, patient portal (web, behind the gateway)
-├── facility/    Facility dashboard over Data Pipes Parquet views
-└── docs/        Architecture, clinical governance, data governance, guideline notes, ADRs
+Tunza/
+├── gateway/            # Tunza Gateway + agent (TypeScript, Fastify)
+│   ├── src/auth/       #   OAuth2 token endpoint, scopes, guard
+│   ├── src/registry/   #   facility + client registries
+│   ├── src/record/     #   FHIR sync endpoint (Android FHIR SDK)
+│   ├── src/claims/     #   claims API, fund rules
+│   ├── src/agent/      #   claim checks and payout logic
+│   ├── src/paypal/     #   PayPal REST client
+│   ├── src/terminology/#   fee schedule
+│   └── scripts/        #   client provisioning + end-to-end tests
+├── android/            # Field app: Kotlin + Android FHIR SDK (in progress)
+├── donor-web/          # Donor page + receipts: PayPal JS SDK (in progress)
+├── scripts/            # PayPal sandbox smoke tests
+└── docker-compose.yml  # HAPI FHIR R4
 ```
 
-`templates/` is the product's core: a care template is a versioned, clinically signed bundle of FHIR resources that any OHS-based app can run.
+## Running it locally
 
----
+### Prerequisites
 
-## Quick start (development, synthetic data)
+- Docker
+- Node.js 22+ (20 works with an engine warning)
+- `curl`, `jq`, `openssl`
+- A free [PayPal Developer](https://developer.paypal.com/) account
 
-Requirements: Docker, JDK 17, Android Studio (Ladybug or later), Python 3.11+.
+### 1. PayPal sandbox
+
+In the PayPal Developer Dashboard (Sandbox mode):
+
+1. **Testing Tools › Sandbox Accounts:** create
+   - a **Business** account, country **United States**: the fund
+   - a second **Business** account, country **United States**: a pharmacy
+   - a **Personal** account: a donor
+2. **Apps & Credentials › Create App:** type **Merchant**, linked to the **fund** account. Under Features, enable **Payouts** and **Advanced Credit and Debit Card Payments**.
+3. Copy the app's Client ID and Secret.
+
+### 2. Environment
 
 ```bash
-# 1. Platform — HAPI, gateway, services, seeded with 5,000 synthetic women
-cd platform
-docker compose up -d
-./scripts/seed.sh            # loads templates/ and models/data/ into HAPI
-
-# 2. Models — regenerate synthetic data, train the baseline, start the prediction service
-cd ../models
-pip install -r requirements.txt
-python synth.py --n 5000 --seed 42 --out ./data
-python train.py --target no_show --model logreg
-python serve.py              # http://localhost:8000/predict/{risk,no_show,demand}
-
-# 3. App — point at the local platform and run on a device or emulator
-cd ../app
-cp local.properties.example local.properties   # set FHIR_BASE_URL and GATEWAY_URL
-./gradlew installDebug
+cp .env.sandbox.example .env.sandbox
 ```
 
-Demo logins for the gateway (facility and patient scopes) are in `platform/gateway/README.md`.
+Fill in `.env.sandbox`:
 
----
-
-## Data
-
-Waypoint ships with a **synthetic cohort** (`models/synth.py`) calibrated to published Kenyan priors: HPV prevalence by age, HPV-16/18 share, HIV prevalence by county, CIN2+ conditional on genotype and HIV, and attendance as a function of distance, cost and phone ownership. It reproduces the real cascade — HPV testing concentrated in higher-level facilities, referrals out when colposcopy is unavailable, loss to follow-up, stock-outs — and it exists so that the whole pipeline runs end to end before any real record is collected.
-
-Synthetic performance is not clinical evidence. The production models are trained only on consented, de-identified Kenyan screening records with histology outcomes, collected under the governance in `docs/data-governance.md`. The analytics schema (`women`, `screenings`, `triage_events`, `histology`, `treatments`, `attendance`, `facility_stock`, `costs`, `model_runs`) is identical for synthetic and real data, so models swap without code changes.
-
-Additional sources and their licences are listed in `docs/data-sources.md` (DHS 2022 microdata for uptake modelling; KHIS aggregates and the 2022 25-county capacity survey for facilities, services and demand).
-
----
-
-## Clinical and data governance
-
-- Every care template version is reviewed and signed by a named clinician before release. Guideline changes ship as a new template version, not a code change.
-- Model versions are validated (discrimination, calibration, subgroup performance by HIV status and county) and recorded in the registry before they can be selected by the app.
-- Health data is sensitive personal data under Kenya's Data Protection Act 2019. Waypoint operates as a registered data controller; consent language is embedded in the intake Questionnaire; de-identification runs at export with keyed pseudonyms; all access passes through the FHIR Info Gateway and is logged.
-- Clinician overrides are first-class: the app records agreement or disagreement with the model on every `RiskAssessment`, and the override rate is a monitored quality signal.
-
-Details: `docs/clinical-governance.md`, `docs/data-governance.md`.
-
----
-
-## Roadmap
-
-1. Cervical screening template, clinically signed; platform on synthetic data
-2. Clinician app with guideline-only pathway, stock, cost and patient summary — no ML in the decision path
-3. Pilot at one facility; real data collection begins
-4. No-show model in production (lowest clinical risk, immediate facility value)
-5. Risk model after validation on real outcomes
-6. Facility dashboard and patient portal as the pilot demands
-7. Second template
-
----
-
-## Tech stack
-
-| Layer | Technology |
+| Variable | Value |
 |---|---|
-| Clinician app | Kotlin, Android FHIR SDK, Jetpack Compose |
-| FHIR server | HAPI FHIR R4 on PostgreSQL |
-| Access control | FHIR Info Gateway |
-| Clinical logic | FHIR PlanDefinition + CQL, executed by the Android FHIR SDK workflow library |
-| Prediction | scikit-learn / LightGBM, ONNX (server) and TFLite (device), FastAPI |
-| Analytics | FHIR Data Pipes → Parquet |
-| Patient messaging | Africa's Talking (SMS/USSD), WhatsApp Business API |
-| Patient summary language | LLM API, server-side, from structured outputs only |
-| Web | React, TypeScript |
+| `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | from the Merchant app |
+| `PAYPAL_API` | `https://api-m.sandbox.paypal.com` |
+| `FUND_EMAIL` | fund sandbox business email |
+| `PROVIDER_EMAIL` | pharmacy sandbox business email |
+| `DONOR_EMAIL` | donor sandbox personal email |
+| `FHIR_BASE` | `http://localhost:8090/fhir` |
+| `GATEWAY_PORT` | `7071` |
+| `GATEWAY_PUBLIC_URL` | `http://<your-lan-ip>:7071` (so a phone can reach it) |
+| `GATEWAY_JWT_SECRET` | output of `openssl rand -base64 48` |
 
----
+`.env.sandbox` is gitignored. Never commit it.
 
-## Contributing
+Check the PayPal setup:
 
-Clinical contributors work in `templates/` and `docs/` and do not need to write Kotlin. See `CONTRIBUTING.md` for the template review process and the definition of done for a model version.
+```bash
+./scripts/card-donation.sh     # card donation captured to the fund
+./scripts/paypal-smoke.sh      # token, order, payout, simulated decline
+```
 
-## Licence
+### 3. FHIR server
 
-To be decided before the first external release. Care templates and the synthetic generator are intended to be open; the trained models and facility analytics are proprietary.
+```bash
+docker compose up -d fhir
+until curl -sf http://localhost:8090/fhir/metadata >/dev/null; do sleep 5; done
+```
+
+### 4. Gateway
+
+```bash
+cd gateway
+npm install
+npm run typecheck
+
+# register the actors (each secret is printed once and saved to data/client-secrets.local.env)
+npm run client:create -- --id=riverside-field-app --actor=field-app --org=Organization/riverside-outreach --name="Riverside Outreach field app"
+npm run client:create -- --id=eastside-pharmacy   --actor=provider  --org=Organization/eastside-pharmacy  --name="Eastside Community Pharmacy"
+npm run client:create -- --id=riverside-lead      --actor=lead      --org=Organization/riverside-outreach --name="Riverside outreach lead"
+npm run client:create -- --id=donor-web           --actor=donor-web --name="Tunza donor web"
+npm run client:create -- --id=tunza-agent         --actor=agent     --name="Tunza agent"
+
+npm run dev
+```
+
+### 5. End-to-end tests
+
+With the gateway running, in another terminal:
+
+```bash
+cd gateway
+./scripts/test-registries.sh   # lead onboards facilities; field app registers clients (duplicate check)
+./scripts/test-record.sh       # field app syncs a signed visit; team isolation and write rules
+./scripts/test-claims.sh       # honest, padded, unrecorded, over-cap and overpriced claims, with PayPal payouts
+```
+
+`test-claims.sh` plays the demo scenarios:
+
+| Scenario | Expected |
+|---|---|
+| Billed exactly what the visit recorded | **paid** with a PayPal payout |
+| Same claim sent twice | **refused**: already paid |
+| Billed 4 dressings, visit shows 1 | **refused**, with the verified $6 offered to the lead |
+| Antibiotics with no visit on record | **refused** |
+| Verified, but over the weekly cap | **held** for the lead |
+| Item not in the fee schedule | **refused** |
+| Billed above the fee-schedule price | **paid** at the schedule price |
+
+Log in at <https://sandbox.paypal.com> as the pharmacy account to see the payouts arrive.
+
+## API overview
+
+All endpoints except `/health` and `/oauth/token` need `Authorization: Bearer <token>`.
+
+| Method | Path | Scope | Purpose |
+|---|---|---|---|
+| `POST` | `/oauth/token` | client credentials | Get an access token |
+| `GET` | `/health` | none | Gateway and FHIR status |
+| `GET` | `/whoami` | any | Inspect the current token |
+| `POST` | `/registry/facilities` | `registry/facility.write` | Onboard a pharmacy, clinic, team or fund |
+| `GET` | `/registry/facilities` | `registry/facility.read` | List facilities (payee emails hidden from other facilities) |
+| `POST` | `/registry/clients` | `registry/client.write` | Register a client, issue a care card, enrol in a fund |
+| `GET` | `/registry/clients/:careCard` | `registry/client.read` | Look up a client |
+| `POST` | `/record/fhir` | `record/write` | Upload a FHIR transaction Bundle (Android FHIR SDK sync) |
+| `GET` | `/record/fhir/:type` | `record/read` | FHIR search, limited to the caller's team |
+| `GET` | `/terminology/fee-schedule` | any | Billable items and prices |
+| `POST` | `/claims` | `claims/submit` | Submit a claim; returns the agent's decision |
+| `GET` | `/claims` | `claims/read` / `claims/read.own` | List claims and decisions |
+| `GET` | `/claims/:id` | `claims/read` / `claims/read.own` | One claim with its decision |
+| `POST` | `/claims/:id/adjudicate` | `claims/decide` | Re-run the agent (never re-pays a paid claim) |
+
+## Privacy and safety
+
+- Clients are registered by initials, estimated age and area only. No legal name or national ID.
+- Donor receipts describe care, never the person.
+- Providers see the decision and its reasons, not the clinical records behind it.
+- Each team can read and write only its own clients' records.
+- All demo data is synthetic.
+
+## Status
+
+| Part | Status |
+|---|---|
+| PayPal sandbox: orders, card capture, payouts | ✅ |
+| Gateway: auth, registries, shared record, claims + agent + payouts | ✅ |
+| AI explanations, plain-language fund rules, anomaly flags | 🚧 |
+| Lead decisions (uphold, pay verified part, approve over cap) | 🚧 |
+| Android field app (FHIR SDK + SDC) | 🚧 |
+| Donor web + receipts (PayPal JS SDK) | 🚧 |
+| Deployment (Render) | 🚧 |
+
+## License
+
+[MIT](LICENSE)
