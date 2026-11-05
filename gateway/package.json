@@ -1,0 +1,24 @@
+{
+  "name": "tunza-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "client:create": "tsx scripts/create-client.ts"
+  },
+  "dependencies": {
+    "@fastify/formbody": "^9.0.1",
+    "dotenv": "^18.0.9",
+    "fastify": "^5.12.8",
+    "jose": "^6.2.15",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
