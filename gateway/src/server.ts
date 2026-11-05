@@ -8,6 +8,7 @@ import { FhirError } from './fhir/client';
 import { facilityRoutes } from './registry/facilities';
 import { clientRoutes } from './registry/clients';
 import { recordRoutes } from './record/sync';
+import { claimRoutes } from './claims/routes';
 
 const app = Fastify({ logger: { level: 'info' }, bodyLimit: 5 * 1024 * 1024 });
 
@@ -34,6 +35,7 @@ await app.register(tokenRoutes);
 await app.register(facilityRoutes);
 await app.register(clientRoutes);
 await app.register(recordRoutes);
+await app.register(claimRoutes);
 
 app.get('/health', async () => {
   let fhirStatus = 'down';

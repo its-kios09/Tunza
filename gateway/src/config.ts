@@ -20,4 +20,9 @@ export const cfg = {
   fhirBase: required('FHIR_BASE').replace(/\/$/, ''),
   clientsFile: path.resolve(process.cwd(), 'data/clients.json'),
   secretsFile: path.resolve(process.cwd(), 'data/client-secrets.local.env'),
+  paypal: {
+    api: (process.env.PAYPAL_API ?? 'https://api-m.sandbox.paypal.com').replace(/\/$/, ''),
+    clientId: required('PAYPAL_CLIENT_ID'),
+    clientSecret: required('PAYPAL_CLIENT_SECRET'),
+  },
 };
