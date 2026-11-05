@@ -1,0 +1,14 @@
+services:
+  fhir:
+    image: hapiproject/hapi:latest
+    container_name: tunza-fhir
+    ports:
+      - "8090:8080"
+    environment:
+      hapi.fhir.fhir_version: R4
+      hapi.fhir.allow_external_references: "true"
+      hapi.fhir.cors.allowed_origin: "*"
+    volumes:
+      - fhir-data:/usr/local/tomcat/target
+volumes:
+  fhir-data:
