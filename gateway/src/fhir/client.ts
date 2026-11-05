@@ -28,6 +28,8 @@ async function call<T = any>(method: string, path: string, body?: unknown): Prom
 
 // Thin FHIR client. HAPI is private: only the gateway talks to it.
 export const fhir = {
+  raw: call,
+
   async read<T extends Resource = Resource>(type: string, id: string): Promise<T | null> {
     try {
       return await call<T>('GET', `${type}/${encodeURIComponent(id)}`);

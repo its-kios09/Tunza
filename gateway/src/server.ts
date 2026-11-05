@@ -7,8 +7,12 @@ import { requireScope } from './auth/guard';
 import { FhirError } from './fhir/client';
 import { facilityRoutes } from './registry/facilities';
 import { clientRoutes } from './registry/clients';
+import { recordRoutes } from './record/sync';
 
-const app = Fastify({ logger: { level: 'info' } });
+const app = Fastify({ logger: { level: 'info' }, bodyLimit: 5 * 1024 * 1024 });
+
+// The FHIR SDK sends application/fhir+json
+app.addContentTypeParser('application/fhir+json', { parseAs: 'string' }, app.getDefaultJsonParser('ignore', 'ignore'));
 
 app.setErrorHandler((err, req, reply) => {
   if (err instanceof ZodError) {
@@ -29,6 +33,7 @@ await app.register(formbody);
 await app.register(tokenRoutes);
 await app.register(facilityRoutes);
 await app.register(clientRoutes);
+await app.register(recordRoutes);
 
 app.get('/health', async () => {
   let fhirStatus = 'down';
@@ -36,7 +41,7 @@ app.get('/health', async () => {
     const r = await fetch(`${cfg.fhirBase}/metadata`, { signal: AbortSignal.timeout(3000) });
     fhirStatus = r.ok ? 'up' : `http ${r.status}`;
   } catch {}
-  return { gateway: 'up', fhir: fhirStatus };
+  return { gateway: 'up', fhir: fhirStatus, publicUrl: cfg.publicUrl };
 });
 
 app.get('/whoami', { preHandler: requireScope() }, async (req) => req.principal);

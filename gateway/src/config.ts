@@ -9,12 +9,15 @@ function required(name: string): string {
   return v;
 }
 
+const port = Number(process.env.GATEWAY_PORT ?? 7071);
+
 export const cfg = {
-  port: Number(process.env.GATEWAY_PORT ?? 7070),
+  port,
+  publicUrl: (process.env.GATEWAY_PUBLIC_URL ?? `http://localhost:${port}`).replace(/\/$/, ''),
   issuer: 'tunza-gateway',
   jwtSecret: new TextEncoder().encode(required('GATEWAY_JWT_SECRET')),
   tokenTtlSeconds: 3600,
-  fhirBase: required('FHIR_BASE'),
+  fhirBase: required('FHIR_BASE').replace(/\/$/, ''),
   clientsFile: path.resolve(process.cwd(), 'data/clients.json'),
   secretsFile: path.resolve(process.cwd(), 'data/client-secrets.local.env'),
 };
