@@ -230,19 +230,4 @@ All endpoints except `/health` and `/oauth/token` need `Authorization: Bearer <t
 - Providers see the decision and its reasons, not the clinical records behind it.
 - Each team can read and write only its own clients' records.
 - All demo data is synthetic.
-
-## Status
-
-| Part | Status |
-|---|---|
-| PayPal sandbox: orders, card capture, payouts | ✅ |
-| Gateway: auth, registries, shared record, claims + agent + payouts | ✅ |
-| AI explanations, plain-language fund rules, anomaly flags | 🚧 |
-| Lead decisions (uphold, pay verified part, approve over cap) | 🚧 |
-| Android field app (FHIR SDK + SDC) | 🚧 |
-| Donor web + receipts (PayPal JS SDK) | 🚧 |
-| Deployment (Render) | 🚧 |
-
-## License
-
 [MIT](LICENSE)
